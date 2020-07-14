@@ -2,14 +2,21 @@ import { toTitleCase } from '@klasa/utils';
 import { Guild } from 'discord.js';
 import { Schema, SchemaEntry, SettingsFolder } from 'klasa';
 
-export const configurableSchemaKeys = new Map<string, Schema | SchemaEntry>();
-
-export function isSchemaFolder(schemaOrEntry: Schema | SchemaEntry): schemaOrEntry is Schema {
-	return schemaOrEntry.type === 'Folder';
+export type SchemaValue = SchemaGroup | SchemaEntry;
+export interface SchemaGroup {
+	path: string;
+	children: Map<string, SchemaGroup | SchemaEntry>;
+	parent: SchemaGroup | null;
 }
 
-export function isSchemaEntry(schemaOrEntry: Schema | SchemaEntry): schemaOrEntry is SchemaEntry {
-	return schemaOrEntry.type !== 'Folder';
+export const schemaKeys: SchemaGroup = { path: '', children: new Map(), parent: null };
+
+export function isSchemaFolder(schemaOrEntry: SchemaValue): schemaOrEntry is SchemaGroup {
+	return schemaOrEntry instanceof Map;
+}
+
+export function isSchemaEntry(schemaOrEntry: SchemaValue): schemaOrEntry is SchemaEntry {
+	return !isSchemaFolder(schemaOrEntry);
 }
 
 export function displayFolder(settings: SettingsFolder) {
@@ -18,7 +25,7 @@ export function displayFolder(settings: SettingsFolder) {
 	const sections = new Map<string, string[]>();
 	let longest = 0;
 	for (const [key, value] of settings.schema.entries()) {
-		if (!configurableSchemaKeys.has(value.path)) continue;
+		if (!schemaKeys.children.has(value.path)) continue;
 
 		if (value.type === 'Folder') {
 			folders.push(`// ${key}`);
@@ -59,20 +66,34 @@ export function displayEntryMultiple(entry: SchemaEntry, values: readonly unknow
 		: `[ ${values.map(value => displayEntrySingle(entry, value, guild)).join(' | ')} ]`;
 }
 
-export function initConfigurableSchema(folder: Schema) {
-	configurableSchemaKeys.clear();
-	if (initFolderConfigurableRecursive(folder)) configurableSchemaKeys.set(folder.path, folder);
-}
+export function initSchema(schema: Schema) {
+	schemaKeys.children.clear();
 
-function initFolderConfigurableRecursive(folder: Schema) {
-	const previousConfigurableCount = configurableSchemaKeys.size;
-	for (const value of folder.values()) {
-		if (value instanceof Schema) {
-			if (initFolderConfigurableRecursive(value)) configurableSchemaKeys.set(value.path, value);
-		} else if (value.configurable) {
-			configurableSchemaKeys.set(value.path, value);
+	for (const [key, value] of schema) {
+		const entry = value as SchemaEntry;
+		if (!entry.configurable) continue;
+
+		const base = key.split('.');
+		const name = base.pop()!;
+
+		let map: SchemaGroup = schemaKeys;
+		for (let i = 0; i < base.length; ++i) {
+			const subKey = base[i];
+			const subPath = map.children.get(subKey);
+			if (typeof subPath === 'undefined') {
+				const path = base.slice(0, i).join('.');
+				const subFolder: SchemaGroup = { path, children: new Map(), parent: map };
+				map.children.set(subKey, subFolder);
+				map = subFolder;
+				schemaKeys.children.set(path, subFolder);
+			} else {
+				map = subPath as SchemaGroup;
+			}
 		}
+
+		map.children.set(name, entry);
+		schemaKeys.children.set(key, entry);
 	}
 
-	return previousConfigurableCount !== configurableSchemaKeys.size;
+	return schemaKeys;
 }

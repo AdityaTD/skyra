@@ -3,7 +3,7 @@ import { SettingsMenu } from '@lib/structures/SettingsMenu';
 import { SkyraCommand, SkyraCommandOptions } from '@lib/structures/SkyraCommand';
 import { PermissionLevels } from '@lib/types/Enums';
 import { ApplyOptions, requiredPermissions } from '@skyra/decorators';
-import { configurableSchemaKeys, displayEntry, displayFolder, initConfigurableSchema, isSchemaEntry } from '@utils/SettingsUtils';
+import { schemaKeys, displayEntry, displayFolder, isSchemaEntry, initSchema } from '@utils/SettingsUtils';
 import { KlasaMessage, SettingsFolder } from 'klasa';
 
 @ApplyOptions<SkyraCommandOptions>({
@@ -25,7 +25,7 @@ export default class extends SkyraCommand {
 	}
 
 	public show(message: KlasaMessage, [key]: [string]) {
-		const schemaOrEntry = configurableSchemaKeys.get(key);
+		const schemaOrEntry = schemaKeys.children.get(key);
 		if (typeof schemaOrEntry === 'undefined') throw message.language.tget('COMMAND_CONF_GET_NOEXT', key);
 
 		const value = key ? message.guild!.settings.get(key) : message.guild!.settings;
@@ -75,7 +75,7 @@ export default class extends SkyraCommand {
 	}
 
 	public async init() {
-		initConfigurableSchema(this.client.gateways.get('guilds')!.schema);
+		initSchema(this.client.gateways.get('guilds')!.schema);
 
 		this.createCustomResolver('key', (arg, _possible, message, [action]: string[]) => {
 			if (['show', 'menu'].includes(action) || arg) return arg || '';

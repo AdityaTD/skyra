@@ -2,10 +2,10 @@ import { Events } from '@lib/types/Enums';
 import { APIErrors, BrandingColors, Time } from '@utils/constants';
 import { LLRCData, LongLivingReactionCollector } from '@utils/LongLivingReactionCollector';
 import { api } from '@utils/Models/Api';
-import { configurableSchemaKeys, displayEntry, isSchemaFolder } from '@utils/SettingsUtils';
+import { schemaKeys, displayEntry, isSchemaFolder, SchemaGroup } from '@utils/SettingsUtils';
 import { floatPromise } from '@utils/util';
 import { DiscordAPIError, MessageCollector, MessageEmbed } from 'discord.js';
-import { KlasaMessage, Schema, SchemaEntry, SchemaFolder, Settings, SettingsFolderUpdateOptions } from 'klasa';
+import { KlasaMessage, SchemaEntry, Settings, SettingsFolderUpdateOptions } from 'klasa';
 import { DbSet } from './DbSet';
 
 const EMOJIS = { BACK: '◀', STOP: '⏹' };
@@ -14,37 +14,39 @@ const TIMEOUT = Time.Minute * 15;
 export class SettingsMenu {
 
 	private readonly message: KlasaMessage;
-	private schema: Schema | SchemaEntry;
 	private readonly oldSettings: Settings;
+	private readonly embed: MessageEmbed;
+	private schema: SchemaGroup;
+	private schemaEntry: SchemaEntry | null;
 	private messageCollector: MessageCollector | null = null;
 	private errorMessage: string | null = null;
 	private llrc: LongLivingReactionCollector | null = null;
-	private readonly embed: MessageEmbed;
 	private response: KlasaMessage | null = null;
 
 	public constructor(message: KlasaMessage) {
 		this.message = message;
-		this.schema = this.message.client.gateways.get('guilds')!.schema;
+		this.schema = schemaKeys;
+		this.schemaEntry = null;
 		this.oldSettings = this.message.guild!.settings.clone();
 		this.embed = new MessageEmbed()
 			.setAuthor(this.message.author.username, this.message.author.displayAvatarURL({ size: 128, format: 'png', dynamic: true }));
 	}
 
 	private get changedCurrentPieceValue(): boolean {
-		if (isSchemaFolder(this.schema)) return false;
-		if (this.schema.array) {
-			const current = this.message.guild!.settings.get(this.schema.path) as unknown[];
-			const old = this.oldSettings.get(this.schema.path) as unknown[];
+		if (!this.schemaEntry) return false;
+		if (this.schemaEntry.array) {
+			const current = this.message.guild!.settings.get(this.schemaEntry.path) as unknown[];
+			const old = this.oldSettings.get(this.schemaEntry.path) as unknown[];
 			return current.length !== old.length || current.some((value, i) => value !== old[i]);
 		}
 		// eslint-disable-next-line eqeqeq
-		return this.message.guild!.settings.get(this.schema.path) != this.oldSettings.get(this.schema.path);
+		return this.message.guild!.settings.get(this.schemaEntry.path) != this.oldSettings.get(this.schemaEntry.path);
 	}
 
 	private get changedPieceValue(): boolean {
-		if (isSchemaFolder(this.schema)) return false;
+		if (!this.schemaEntry) return false;
 		// eslint-disable-next-line eqeqeq
-		return this.message.guild!.settings.get(this.schema.path) != this.schema.default;
+		return this.message.guild!.settings.get(this.schemaEntry.path) != this.schemaEntry.default;
 	}
 
 	public async init(): Promise<void> {
@@ -64,39 +66,37 @@ export class SettingsMenu {
 	private async render() {
 		const i18n = this.message.language;
 		const description: string[] = [];
-		if (isSchemaFolder(this.schema)) {
+		if (this.schemaEntry) {
+			description.push(i18n.tget('COMMAND_CONF_MENU_RENDER_AT_PIECE', this.schemaEntry.path));
+			if (this.errorMessage) description.push('\n', this.errorMessage, '\n');
+			if (this.schemaEntry.configurable) {
+				description.push(
+					i18n.get(`SETTINGS_${this.schemaEntry.path.replace(/[.-]/g, '_').toUpperCase()}`),
+					'',
+					i18n.tget('COMMAND_CONF_MENU_RENDER_TCTITLE'),
+					i18n.tget('COMMAND_CONF_MENU_RENDER_UPDATE'),
+					this.schemaEntry.array && (this.message.guild!.settings.get(this.schemaEntry.path) as unknown[]).length ? i18n.tget('COMMAND_CONF_MENU_RENDER_REMOVE') : '',
+					this.changedPieceValue ? i18n.tget('COMMAND_CONF_MENU_RENDER_RESET') : '',
+					this.changedCurrentPieceValue ? i18n.tget('COMMAND_CONF_MENU_RENDER_UNDO') : '',
+					'',
+					i18n.tget('COMMAND_CONF_MENU_RENDER_CVALUE', displayEntry(this.schemaEntry, this.message.guild!.settings.get(this.schemaEntry.path), this.message.guild!).replace(/``+/g, '`\u200B`'))
+				);
+			}
+		} else {
 			description.push(i18n.tget('COMMAND_CONF_MENU_RENDER_AT_FOLDER', this.schema.path || 'Root'));
 			if (this.errorMessage) description.push(this.errorMessage);
 			const keys: string[] = [];
 			const folders: string[] = [];
-			for (const [key, value] of this.schema.entries()) {
-				const entry = configurableSchemaKeys.get(value.path);
-				if (typeof entry === 'undefined') continue;
-				if (isSchemaFolder(entry)) folders.push(key);
+			for (const [key, value] of this.schema.children.entries()) {
+				if (isSchemaFolder(value)) folders.push(key);
 				else keys.push(key);
 			}
 
 			if (!folders.length && !keys.length) description.push(i18n.tget('COMMAND_CONF_MENU_RENDER_NOKEYS'));
 			else description.push(i18n.tget('COMMAND_CONF_MENU_RENDER_SELECT'), '', ...folders.map(folder => `• \\📁${folder}`), ...keys.map(key => `• ${key}`));
-		} else {
-			description.push(i18n.tget('COMMAND_CONF_MENU_RENDER_AT_PIECE', this.schema.path));
-			if (this.errorMessage) description.push('\n', this.errorMessage, '\n');
-			if (this.schema.configurable) {
-				description.push(
-					i18n.get(`SETTINGS_${this.schema.path.replace(/[.-]/g, '_').toUpperCase()}`),
-					'',
-					i18n.tget('COMMAND_CONF_MENU_RENDER_TCTITLE'),
-					i18n.tget('COMMAND_CONF_MENU_RENDER_UPDATE'),
-					this.schema.array && (this.message.guild!.settings.get(this.schema.path) as unknown[]).length ? i18n.tget('COMMAND_CONF_MENU_RENDER_REMOVE') : '',
-					this.changedPieceValue ? i18n.tget('COMMAND_CONF_MENU_RENDER_RESET') : '',
-					this.changedCurrentPieceValue ? i18n.tget('COMMAND_CONF_MENU_RENDER_UNDO') : '',
-					'',
-					i18n.tget('COMMAND_CONF_MENU_RENDER_CVALUE', displayEntry(this.schema, this.message.guild!.settings.get(this.schema.path), this.message.guild!).replace(/``+/g, '`\u200B`'))
-				);
-			}
 		}
 
-		const { parent } = this.schema as SchemaEntry | SchemaFolder;
+		const { parent } = this.schemaEntry ?? this.schema;
 
 		if (parent) floatPromise(this.message, this._reactResponse(EMOJIS.BACK));
 		else floatPromise(this.message, this._removeReactionFromUser(EMOJIS.BACK, this.message.client.user!.id));
@@ -114,11 +114,7 @@ export class SettingsMenu {
 
 		this.llrc?.setTime(TIMEOUT);
 		this.errorMessage = null;
-		if (isSchemaFolder(this.schema)) {
-			const schema = this.schema.get(message.content);
-			if (schema && configurableSchemaKeys.has(schema.path)) this.schema = schema;
-			else this.errorMessage = this.message.language.tget('COMMAND_CONF_MENU_INVALID_KEY');
-		} else {
+		if (this.schemaEntry) {
 			const [command, ...params] = message.content.split(' ');
 			const commandLowerCase = command.toLowerCase();
 			if (commandLowerCase === 'set') await this.tryUpdate(params.join(' '), { arrayAction: 'add' });
@@ -126,6 +122,14 @@ export class SettingsMenu {
 			else if (commandLowerCase === 'reset') await this.tryUpdate(null);
 			else if (commandLowerCase === 'undo') await this.tryUndo();
 			else this.errorMessage = this.message.language.tget('COMMAND_CONF_MENU_INVALID_ACTION');
+		} else {
+			const schema = this.schema.children.get(message.content);
+			if (schema) {
+				if (isSchemaFolder(schema)) this.schema = schema;
+				else this.schemaEntry = schema;
+			} else {
+				this.errorMessage = this.message.language.tget('COMMAND_CONF_MENU_INVALID_KEY');
+			}
 		}
 
 		if (!this.errorMessage) floatPromise(this.message, message.nuke());
@@ -139,7 +143,8 @@ export class SettingsMenu {
 			this.llrc?.end();
 		} else if (reaction.emoji.name === EMOJIS.BACK) {
 			floatPromise(this.message, this._removeReactionFromUser(EMOJIS.BACK, reaction.userID));
-			if ((this.schema as SchemaFolder | SchemaEntry).parent) this.schema = (this.schema as SchemaFolder | SchemaEntry).parent;
+			if (this.schemaEntry) this.schemaEntry = null;
+			else if (this.schema.parent) this.schema = this.schema.parent;
 			await this._renderResponse();
 		}
 	}
@@ -201,9 +206,9 @@ export class SettingsMenu {
 	private async tryUpdate(value: unknown, options: SettingsFolderUpdateOptions = {}) {
 		try {
 			const updated = await (value === null
-				? this.message.guild!.settings.reset(this.schema.path, { ...options, extraContext: { author: this.message.author.id } })
-				: this.message.guild!.settings.update(this.schema.path, value, { ...options, extraContext: { author: this.message.author.id } }));
-			if (updated.length === 0) this.errorMessage = this.message.language.tget('COMMAND_CONF_NOCHANGE', (this.schema as SchemaEntry).key);
+				? this.message.guild!.settings.reset(this.schemaEntry!.path, { ...options, extraContext: { author: this.message.author.id } })
+				: this.message.guild!.settings.update(this.schemaEntry!.path, value, { ...options, extraContext: { author: this.message.author.id } }));
+			if (updated.length === 0) this.errorMessage = this.message.language.tget('COMMAND_CONF_NOCHANGE', this.schemaEntry!.key);
 		} catch (error) {
 			this.errorMessage = String(error);
 		}
@@ -211,16 +216,16 @@ export class SettingsMenu {
 
 	private async tryUndo() {
 		if (this.changedCurrentPieceValue) {
-			const previousValue = this.oldSettings.get(this.schema.path);
+			const previousValue = this.oldSettings.get(this.schemaEntry!.path);
 			try {
 				await (previousValue === null
-					? this.message.guild!.settings.reset(this.schema.path, { extraContext: { author: this.message.author.id } })
-					: this.message.guild!.settings.update(this.schema.path, previousValue, { arrayAction: 'overwrite', extraContext: { author: this.message.author.id } }));
+					? this.message.guild!.settings.reset(this.schemaEntry!.path, { extraContext: { author: this.message.author.id } })
+					: this.message.guild!.settings.update(this.schemaEntry!.path, previousValue, { arrayAction: 'overwrite', extraContext: { author: this.message.author.id } }));
 			} catch (error) {
 				this.errorMessage = String(error);
 			}
 		} else {
-			this.errorMessage = this.message.language.tget('COMMAND_CONF_NOCHANGE', (this.schema as SchemaEntry).key);
+			this.errorMessage = this.message.language.tget('COMMAND_CONF_NOCHANGE', this.schemaEntry!.key);
 		}
 	}
 
